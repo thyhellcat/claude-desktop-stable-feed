@@ -1,4 +1,4 @@
-/* stable-feed.js v5 — keep every message of the Claude Desktop transcript mounted.
+/* stable-feed.js v6 — keep every message of the Claude Desktop transcript mounted.
  *
  * The transcript list (rocksteady virtualizer) mounts the rows that fall in
  * the scroller's visible height plus a margin, and every row once the rest of
@@ -16,15 +16,16 @@
  * (its ResizeObserver) and restores a saved real height when a session is
  * reopened; a plain scroll updates the total height alone. A mismatch makes
  * "follow the end" start the window near the bottom. So a watchdog checks
- * every list once a second and, when rows are missing, changes the
+ * every list once a second and, when rows are missing (judged from the row
+ * indexes and the messages' aria-posinset / aria-setsize), changes the
  * scroller's padding by one pixel for one rendered frame: the ResizeObserver
  * fires and the list re-reads the (fake) height.
  *
  * Install: DevTools (Ctrl+Alt+I) > Console, paste, Enter. Running it again
  * replaces the previous version in place.
- * Since v5, a session switch focuses the last message once the list is whole
- * (__stableFeed.focusLastOnSwitch = false turns it off; __stableFeed.focusLast()
- * does it on demand).
+ * Ctrl+L, or __stableFeed.focusLast(), focuses the last message; the
+ * focus never moves by itself (__stableFeed.focusKey changes or disables the
+ * shortcut).
  *
  * Status: __stableFeed.status()   Re-measures so far: __stableFeed.nudges
  * Off: __stableFeed.stop()
@@ -38,7 +39,7 @@
   const CH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
   const SH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
   const MIN_FAKE = 1_000_000;
-  const S = (window.__stableFeed = { version: 5, patched: new Set(), nudges: 0, busy: new Set() });
+  const S = (window.__stableFeed = { version: 6, patched: new Set(), nudges: 0, busy: new Set() });
 
   const scrollerOf = sizer => {
     for (let el = sizer.parentElement; el && el !== document.body; el = el.parentElement) {
@@ -81,80 +82,98 @@
   };
 
   const inspect = sizer => {
-    // Rows left out are stood in for by spacers. A spacer also carries the
-    // list's fixed padding (48px in the Code tab), so only a taller one, or a
-    // gap in the indexes, means rows are missing.
-    const spacers = [...sizer.querySelectorAll('[data-testid="transcript-spacer"]')]
-      .map(s => Math.round(parseFloat(s.style.height) || 0));
+    // Rows left out are stood in for by spacers, but a spacer also carries the
+    // list's own padding, so its height says little. Instead: the rows must
+    // start at 0 with no gap in the indexes, and the last message mounted must
+    // be the last one (each message has aria-posinset / aria-setsize).
     const idx = [...sizer.querySelectorAll('[data-rs-index]')].map(w => +w.getAttribute('data-rs-index'));
     const contiguous = idx.every((n, i) => i === 0 || n === idx[i - 1] + 1);
+    const msgs = sizer.querySelectorAll('[aria-setsize]');
+    const lastMsg = msgs[msgs.length - 1];
+    const pos = lastMsg ? +lastMsg.getAttribute('aria-posinset') : null;
+    const size = lastMsg ? +lastMsg.getAttribute('aria-setsize') : null;
     return {
-      complete: idx.length === 0 || (idx[0] === 0 && contiguous && spacers.every(h => h <= 64)),
+      complete: idx.length === 0 || (idx[0] === 0 && contiguous && pos === size),
       rows: idx.length,
       first: idx.length ? Math.min(...idx) : null,
       last: idx.length ? Math.max(...idx) : null,
-      spacers,
+      messages: lastMsg ? pos + '/' + size : null,
     };
   };
 
-  // On a session switch (the path names the session), once its list is whole,
-  // focus the last message so the screen reader starts there instead of at the
-  // top of the page. Never taken from someone typing: only when the focus is
-  // nowhere, or on an empty prompt.
-  S.focusLastOnSwitch = true;
-  let lastPath = location.pathname;
-  let pending = null;
-  const canTakeFocus = () => {
-    const a = document.activeElement;
-    if (!a || a === document.body) return true;
-    return a.getAttribute('role') === 'textbox' && a.textContent.trim() === '';
-  };
-  const focusLast = sizer => {
-    const articles = sizer.querySelectorAll('[role="article"]');
-    const last = articles[articles.length - 1];
-    if (!last) return false;
-    if (!last.hasAttribute('tabindex')) last.setAttribute('tabindex', '-1');
-    last.focus();
-    return true;
-  };
-  S.focusLast = () => {
-    const sizer = document.querySelector(SIZER);
-    return !!sizer && focusLast(sizer);
+  const keep = sizer => {
+    const el = scrollerOf(sizer);
+    if (!el) return null;
+    patch(el);
+    const state = inspect(sizer);
+    if (!state.complete) nudge(el);
+    return state;
   };
 
+  // Watchdog: keeps every list patched and whole.
   const tick = () => {
-    if (location.pathname !== lastPath) {
-      lastPath = location.pathname;
-      pending = S.focusLastOnSwitch ? { path: lastPath, at: Date.now() } : null;
-    }
-    for (const sizer of document.querySelectorAll(SIZER)) {
-      const el = scrollerOf(sizer);
-      if (!el) continue;
-      patch(el);
-      const state = inspect(sizer);
-      if (!state.complete) nudge(el);
-      // Wait for the whole list, three seconds at most.
-      if (pending && state.rows > 0 && (state.complete || Date.now() - pending.at > 3000)) {
-        if (canTakeFocus()) focusLast(sizer);
-        pending = null;
-      }
-    }
-    if (pending && Date.now() - pending.at > 10000) pending = null;
+    for (const sizer of document.querySelectorAll(SIZER)) keep(sizer);
     for (const el of S.patched) if (!el.isConnected) S.patched.delete(el);
   };
   S.timer = setInterval(tick, 1000);
+
+  // Focus the last message, on demand only. If the end of the list is not
+  // mounted yet, re-measure and wait for it (one second at most), so the
+  // focus lands on the true last message.
+  const lastArticle = sizer => {
+    const articles = sizer.querySelectorAll('[role="article"]');
+    return articles[articles.length - 1] ?? null;
+  };
+  let waiting = null;
+  S.focusLast = () => {
+    const sizer = document.querySelector(SIZER);
+    if (!sizer) return false;
+    clearInterval(waiting);
+    const started = Date.now();
+    const attempt = () => {
+      const state = keep(sizer);
+      if (state && !state.complete && Date.now() - started < 1000) return false;
+      clearInterval(waiting);
+      const last = lastArticle(sizer);
+      if (!last) return false;
+      if (!last.hasAttribute('tabindex')) last.setAttribute('tabindex', '-1');
+      last.focus();
+      return true;
+    };
+    if (attempt()) return true;
+    waiting = setInterval(attempt, 100);
+    return false;
+  };
+
+  // Keyboard shortcut for focusLast, wherever the focus is. Default Ctrl+L
+  // (physical key, so the same on AZERTY and QWERTY). Change it with
+  // __stableFeed.focusKey = { code: 'KeyL', ctrl: true, alt: false,
+  // shift: false }, or set it to null to turn the shortcut off.
+  S.focusKey = { code: 'KeyL', ctrl: true, alt: false, shift: false };
+  const onKey = e => {
+    const k = S.focusKey;
+    if (!k || e.code !== k.code || e.repeat) return;
+    if (e.altKey !== !!k.alt || e.shiftKey !== !!k.shift || e.ctrlKey !== !!k.ctrl || e.metaKey) return;
+    if (!document.querySelector(SIZER)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    S.focusLast();
+  };
+  window.addEventListener('keydown', onKey, true);
 
   S.status = () => {
     const out = [...document.querySelectorAll(SIZER)].map(sizer => {
       const el = scrollerOf(sizer);
       return { ...inspect(sizer), patched: !!el && S.patched.has(el) };
     });
-    console.log('[stable-feed] v5 ' + JSON.stringify(out) + ' nudges=' + S.nudges);
+    console.log('[stable-feed] v6 ' + JSON.stringify(out) + ' nudges=' + S.nudges);
     return out;
   };
 
   S.detach = ({ keepPatched = false } = {}) => {
     clearInterval(S.timer);
+    clearInterval(waiting);
+    window.removeEventListener('keydown', onKey, true);
     if (!keepPatched) for (const el of [...S.patched]) unpatch(el);
     delete window.__stableFeed;
   };

@@ -8,7 +8,7 @@ Latest version: [releases/latest](https://github.com/thyhellcat/claude-desktop-s
 
 Claude Desktop only keeps the messages near the visible part of the window in the page. The rest is removed and added back as you scroll. Sighted users never notice. With a screen reader, the message you are reading disappears under your cursor: reading jumps to the top of the conversation or into an old reply, constantly, and even more while a reply is being generated.
 
-The script makes the app keep every message in the page. Nothing changes visually, and buttons, expandable blocks and tasks keep working. When you switch sessions, it also puts focus on the last message, so you start reading at the latest reply.
+The script makes the app keep every message in the page. Nothing changes visually, and buttons, expandable blocks and tasks keep working. Press **Ctrl+L** at any time to put focus on the last message, so you can start reading at the latest reply.
 
 Full technical details and the fix proposed to Anthropic: https://github.com/anthropics/claude-code/issues/99332
 
@@ -45,7 +45,9 @@ The script does not survive a restart of the app. Run it again each time you ope
 2. Go to the console: press **Ctrl+Shift+P**, type `Show Console`, press **Enter**.
 3. Open `stable-feed.js` in a text editor (Notepad works), select all, copy, then paste in the console and press **Enter**.
    The first time, the console may refuse to paste and ask you to type `allow pasting`. Type it, press **Enter**, then paste again.
-4. The console prints a line starting with `[stable-feed] v5`. That's it: you can close DevTools.
+4. The console prints a line starting with `[stable-feed] v6`. That's it: you can close DevTools.
+
+Updating from an older version: just paste the new script. It replaces the running one, no need to stop it first.
 
 ### Faster: save it as a snippet (optional)
 
@@ -62,8 +64,13 @@ You can also select the snippet in the Snippets list, open its context menu and 
 
 Type these in the console:
 
-- `__stableFeed.status()`: shows, for each conversation, which parts are loaded, from `first` to `last`. If `first` is 0, the script is doing its job. Don't worry about the `complete` value: it sometimes says `false` when nothing is missing.
+- `__stableFeed.status()`: shows, for each conversation, whether every message is loaded (`complete`) and how many there are (for example `"messages":"8/8"`).
+- `__stableFeed.focusKey = null`: turns the Ctrl+L shortcut off. To use another key, for example Alt+Shift+L: `__stableFeed.focusKey = { code: 'KeyL', alt: true, shift: true, ctrl: false }`.
 - `__stableFeed.stop()`: turns the script off until the next time you run it.
+
+## Changes
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
